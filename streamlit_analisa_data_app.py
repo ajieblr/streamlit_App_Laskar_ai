@@ -1,202 +1,166 @@
 import streamlit as st
 import pandas as pd
-import plotly.express as px
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
+import matplotlib.pyplot as plt
+import seaborn as sns
+import datetime as dt
 
 # --- Konfigurasi Halaman ---
-st.set_page_config(
-    page_title="Dasbor Analisis Pelanggan",
-    page_icon="📊",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+st.set_page_config(layout="wide")
 
-# --- Fungsi untuk Memuat Data ---
-# Menggunakan cache untuk mempercepat pemuatan data pada interaksi berikutnya
+# Mengatur gaya plot
+sns.set(style='dark')
+
+# --- Fungsi untuk Memuat dan Menggabungkan Data ---
 @st.cache_data
-def load_data(filepath):
-    """Memuat data dari file CSV."""
-    try:
-        df = pd.read_csv(filepath)
-        # Konversi kolom tanggal jika ada (meskipun tidak digunakan langsung di dasbor ini)
-        # Jika file tidak ditemukan, berikan pesan error yang jelas
-        return df
-    except FileNotFoundError:
-        st.error(f"File tidak ditemukan di '{filepath}'. Pastikan file 'rfm_with_geo_segments.csv' berada di direktori yang sama dengan skrip Streamlit Anda.")
-        return None
+def load_data():
+    # Memuat data utama yang telah diproses
+    all_df = pd.read_csv("full_data.csv")
+    
+    # Memuat data geolokasi
+    geoloc_df = pd.read_csv("geolocation_data.csv")
+    
+    # Mengagregasi data geolokasi untuk mendapatkan satu lat/lng per zip code (mengambil median)
+    # Ini untuk efisiensi dan menghindari duplikasi
+    geolocation_agg_df = geoloc_df.groupby('geolocation_zip_code_prefix').agg({
+        'geolocation_lat': 'median',
+        'geolocation_lng': 'median'
+    }).reset_index()
+    
+    # Menggabungkan data utama dengan data geolokasi berdasarkan zip code
+    merged_data = pd.merge(
+        all_df,
+        geolocation_agg_df,
+        left_on='customer_zip_code_prefix',
+        right_on='geolocation_zip_code_prefix',
+        how='left'
+    )
+    return merged_data
 
-# --- Memuat Data ---
-# Ganti 'rfm_with_geo_segments.csv' dengan path yang benar jika perlu
-DATA_URL = 'rfm_with_geo_segments.csv'
-data = load_data(DATA_URL)
+# --- Fungsi untuk Kalkulasi RFM ---
+@st.cache_data
+def calculate_rfm(df):
+    """
+    Menghitung Recency, Frequency, dan Monetary value untuk setiap pelanggan.
+    """
+    df['order_purchase_timestamp'] = pd.to_datetime(df['order_purchase_timestamp'])
+    
+    snapshot_date = df['order_purchase_timestamp'].max() + dt.timedelta(days=1)
+    
+    rfm_df = df.groupby('customer_unique_id').agg({
+        'order_purchase_timestamp': lambda x: (snapshot_date - x.max()).days,
+        'order_id': 'nunique',
+        'payment_value': 'sum'
+    }).reset_index()
+    
+    rfm_df.rename(columns={
+        'order_purchase_timestamp': 'Recency',
+        'order_id': 'Frequency',
+        'payment_value': 'Monetary'
+    }, inplace=True)
+    
+    return rfm_df
 
-# --- Tampilan Utama ---
-st.title("📊 Dasbor Analisis Pelanggan")
-st.markdown("Dasbor interaktif untuk memvisualisasikan segmentasi pelanggan berdasarkan RFM (Recency, Frequency, Monetary) dan analisis geografis.")
+# --- Fungsi Utama Aplikasi ---
+def main():
+    all_df = load_data()
 
-# --- Sidebar untuk Navigasi ---
-st.sidebar.title("Navigasi")
-selection = st.sidebar.radio("Pilih Halaman:", 
-    ['Ringkasan & Segmentasi RFM', 'Analisis Geografis', 'Distribusi Metrik RFM']
-)
-st.sidebar.markdown("---")
-st.sidebar.info("Dasbor ini dibuat untuk menganalisis perilaku pelanggan dari data E-Commerce.")
+    # --- Sidebar untuk Navigasi ---
+    st.sidebar.title("Navigasi Dasbor")
+    page = st.sidebar.selectbox("Pilih Halaman:", 
+                                ["Ringkasan Umum", "Analisis Pelanggan (RFM)", "Analisis Geografis"])
 
-
-# --- Logika Halaman ---
-# Hanya jalankan jika data berhasil dimuat
-if data is not None:
-
-    # ==============================================================================
-    # Halaman 1: Ringkasan & Segmentasi RFM
-    # ==============================================================================
-    if selection == 'Ringkasan & Segmentasi RFM':
-        st.header("Segmentasi Pelanggan RFM")
-        st.markdown("Halaman ini menampilkan pembagian pelanggan ke dalam segmen-segmen berbeda berdasarkan perilaku pembelian mereka.")
-
-        # --- Visualisasi Distribusi Segmen ---
-        st.subheader("Distribusi Segmen Pelanggan")
+    # --- Halaman Utama: Ringkasan Umum ---
+    if page == "Ringkasan Umum":
+        st.title('📊 Dasbor Analisis E-Commerce')
+        st.markdown("Dasbor ini menyajikan analisis dari data E-Commerce publik Brasil.")
         
-        # Hitung jumlah pelanggan per segmen
-        segment_counts = data['Segment'].value_counts().reset_index()
-        segment_counts.columns = ['Segment', 'Jumlah Pelanggan']
+        st.header('Metrik Utama')
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Total Pelanggan Unik", f"{all_df['customer_unique_id'].nunique():,}")
+        with col2:
+            st.metric("Total Pesanan", f"{all_df['order_id'].nunique():,}")
+        with col3:
+            st.metric("Total Pendapatan", f"R$ {all_df['payment_value'].sum():,.2f}")
 
-        # Buat bar chart dengan Plotly Express
-        fig_segment = px.bar(
-            segment_counts,
-            x='Segment',
-            y='Jumlah Pelanggan',
-            color='Segment',
-            title="Jumlah Pelanggan per Segmen",
-            labels={'Segment': 'Segmen Pelanggan', 'Jumlah Pelanggan': 'Jumlah Pelanggan'},
-            text='Jumlah Pelanggan'
-        )
-        fig_segment.update_traces(textposition='outside')
-        fig_segment.update_layout(xaxis_tickangle=-45, showlegend=False)
-        st.plotly_chart(fig_segment, use_container_width=True)
+        st.subheader("Distribusi Status Pesanan")
+        fig, ax = plt.subplots(figsize=(10, 5))
+        order_status_counts = all_df['order_status'].value_counts()
+        sns.barplot(x=order_status_counts.index, y=order_status_counts.values, ax=ax, palette="viridis")
+        ax.set_title('Jumlah Pesanan Berdasarkan Status')
+        ax.set_ylabel('Jumlah Pesanan')
+        ax.set_xlabel('Status Pesanan')
+        ax.tick_params(axis='x', rotation=45)
+        st.pyplot(fig)
+
+        st.subheader("Metode Pembayaran Populer")
+        fig, ax = plt.subplots(figsize=(10, 5))
+        payment_type_counts = all_df['payment_type'].dropna().value_counts().head(5)
+        sns.barplot(x=payment_type_counts.index, y=payment_type_counts.values, ax=ax, palette="flare")
+        ax.set_title('Top 5 Metode Pembayaran yang Digunakan')
+        ax.set_ylabel('Jumlah Transaksi')
+        ax.set_xlabel('Tipe Pembayaran')
+        st.pyplot(fig)
+
+    # --- Halaman Analisis Pelanggan (RFM) ---
+    elif page == "Analisis Pelanggan (RFM)":
+        st.title('Segmentasi Pelanggan Berdasarkan RFM')
+        st.markdown("Analisis RFM (Recency, Frequency, Monetary) untuk mengidentifikasi pelanggan paling bernilai.")
+
+        rfm_df = calculate_rfm(all_df)
+        
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            avg_recency = round(rfm_df.Recency.mean(), 1)
+            st.metric("Rata-rata Recency (Hari)", value=avg_recency)
+        with col2:
+            avg_frequency = round(rfm_df.Frequency.mean(), 1)
+            st.metric("Rata-rata Frequency", value=avg_frequency)
+        with col3:
+            avg_monetary = round(rfm_df.Monetary.mean(), 2)
+            st.metric("Rata-rata Monetary (R$)", value=f"{avg_monetary:,.2f}")
+        
+        st.subheader("Distribusi Pelanggan Berdasarkan RFM Score")
+        fig, axes = plt.subplots(1, 3, figsize=(20, 6))
+        
+        sns.histplot(rfm_df['Recency'], bins=30, kde=True, ax=axes[0], color='skyblue')
+        axes[0].set_title('Distribusi Recency')
+        
+        sns.histplot(rfm_df['Frequency'], bins=30, kde=True, ax=axes[1], color='salmon')
+        axes[1].set_title('Distribusi Frequency')
+        
+        sns.histplot(rfm_df['Monetary'], bins=30, kde=True, ax=axes[2], color='lightgreen')
+        axes[2].set_title('Distribusi Monetary')
+        
+        st.pyplot(fig)
         
         st.markdown("""
-        **Interpretasi:**
-        - **Champions:** Pelanggan terbaik Anda. Mereka membeli baru-baru ini, sering, dan menghabiskan banyak uang.
-        - **Loyal Customers:** Pelanggan yang membeli cukup sering dan baru-baru ini.
-        - **Big Spenders:** Pelanggan yang menghabiskan banyak uang, meskipun mungkin tidak terlalu sering.
-        - **Lapsed:** Pelanggan yang sudah lama tidak melakukan pembelian.
-        - **At Risk / Lapsed Low Value:** Pelanggan bernilai rendah yang berisiko churn atau sudah tidak aktif.
+        **Insight:** - **Recency:** Sebagian besar pelanggan melakukan pembelian dalam 200 hari terakhir.
+        - **Frequency:** Mayoritas pelanggan hanya melakukan satu kali transaksi, menunjukkan adanya peluang besar untuk meningkatkan retensi.
+        - **Monetary:** Distribusi nilai moneter cenderung miring ke kanan, menandakan ada sejumlah kecil pelanggan yang berbelanja dengan nilai sangat tinggi.
         """)
+
+    # --- Halaman Analisis Geografis ---
+    elif page == "Analisis Geografis":
+        st.title('Analisis Geografis Pelanggan')
         
-        st.markdown("---")
+        st.subheader('Pelanggan dengan Nilai Pembelian Tertinggi Berdasarkan Wilayah (Kota)')
         
-        # --- Menampilkan Pelanggan Champions ---
-        st.subheader("🏆 Pelanggan 'Champions' Teratas")
-        st.markdown("Berikut adalah daftar pelanggan paling bernilai berdasarkan skor RFM gabungan.")
+        city_payment = all_df.groupby('customer_city')['payment_value'].sum().sort_values(ascending=False).head(10)
         
-        champions_df = data[data['Segment'] == 'Champions'].sort_values(
-            by='RFM_Score_Sum', ascending=False
-        ).head(10)
+        fig, ax = plt.subplots(figsize=(12, 6))
+        sns.barplot(x=city_payment.values, y=city_payment.index, palette="mako", ax=ax)
+        ax.set_title('Top 10 Kota dengan Total Nilai Pembelian Tertinggi')
+        ax.set_xlabel('Total Nilai Pembelian (R$)')
+        ax.set_ylabel('Kota')
+        st.pyplot(fig)
+        st.markdown("São Paulo dan Rio de Janeiro secara signifikan mendominasi total nilai pembelian, menunjukkan konsentrasi pasar di kota-kota besar.")
         
-        st.dataframe(champions_df[[
-            'customer_unique_id', 'Recency', 'Frequency', 'MonetaryValue', 'RFM_Score_Sum', 'customer_city', 'customer_state'
-        ]], use_container_width=True)
+        st.subheader('Peta Sebaran Pelanggan di Brasil')
+        # Menghapus duplikat dan nilai NaN untuk visualisasi peta yang lebih bersih
+        geo_df = all_df[['customer_unique_id', 'geolocation_lat', 'geolocation_lng']].drop_duplicates(subset='customer_unique_id').dropna()
+        st.map(geo_df, latitude='geolocation_lat', longitude='geolocation_lng', size=10)
+        st.markdown("Peta interaktif di atas menunjukkan konsentrasi pelanggan yang sangat padat di wilayah tenggara dan selatan Brasil, terutama di sekitar kota-kota besar.")
 
-
-    # ==============================================================================
-    # Halaman 2: Analisis Geografis
-    # ==============================================================================
-    elif selection == 'Analisis Geografis':
-        st.header("Analisis Geografis Pelanggan")
-        st.markdown("Melihat distribusi geografis pelanggan berdasarkan loyalitas dan nilai pembelian.")
-        
-        col1, col2 = st.columns(2)
-
-        with col1:
-            # --- Perbandingan Loyal vs Tidak Loyal ---
-            st.subheader("Distribusi Pelanggan Loyal vs. Tidak Loyal")
-            
-            loyalty_counts = data.groupby(['customer_state', 'Loyalty']).size().reset_index(name='counts')
-            loyal_customers = loyalty_counts[loyalty_counts['Loyalty'] == 'Loyal'].nlargest(10, 'counts')
-            not_loyal_customers = loyalty_counts[loyalty_counts['Loyalty'] == 'Not Loyal'].nlargest(10, 'counts')
-            
-            fig_loyal = px.bar(
-                loyal_customers, 
-                x='customer_state', y='counts', 
-                title='Top 10 Negara Bagian (Pelanggan Loyal)',
-                labels={'customer_state': 'Negara Bagian', 'counts': 'Jumlah Pelanggan'},
-                color_discrete_sequence=px.colors.qualitative.Safe
-            )
-            st.plotly_chart(fig_loyal, use_container_width=True)
-
-        with col2:
-            st.subheader(" ") # spasi untuk alignment
-            st.markdown(" ") # spasi untuk alignment
-            
-            fig_not_loyal = px.bar(
-                not_loyal_customers,
-                x='customer_state', y='counts',
-                title='Top 10 Negara Bagian (Pelanggan Tidak Loyal)',
-                labels={'customer_state': 'Negara Bagian', 'counts': 'Jumlah Pelanggan'},
-                color_discrete_sequence=px.colors.qualitative.Pastel1
-            )
-            st.plotly_chart(fig_not_loyal, use_container_width=True)
-
-        st.markdown("---")
-        
-        # --- Pelanggan Bernilai Tinggi ---
-        st.subheader("Lokasi Pelanggan dengan Nilai Pembelian Tertinggi")
-        st.markdown("Negara bagian dengan jumlah pelanggan 'Big Spenders' terbanyak.")
-
-        big_spenders_geo = data[data['Segment'] == 'Big Spenders']['customer_state'].value_counts().nlargest(10).reset_index()
-        big_spenders_geo.columns = ['Negara Bagian', 'Jumlah Pelanggan']
-
-        fig_high_value = px.bar(
-            big_spenders_geo,
-            x='Negara Bagian',
-            y='Jumlah Pelanggan',
-            title="Top 10 Negara Bagian untuk Pelanggan Bernilai Tinggi",
-            text='Jumlah Pelanggan',
-            color='Negara Bagian'
-        )
-        fig_high_value.update_traces(textposition='outside')
-        fig_high_value.update_layout(showlegend=False)
-        st.plotly_chart(fig_high_value, use_container_width=True)
-        
-
-    # ==============================================================================
-    # Halaman 3: Distribusi Metrik RFM
-    # ==============================================================================
-    elif selection == 'Distribusi Metrik RFM':
-        st.header("Distribusi Metrik RFM")
-        st.markdown("Memahami sebaran nilai Recency, Frequency, dan Monetary di seluruh basis pelanggan.")
-
-        # Slider untuk memilih jumlah bins
-        num_bins = st.slider('Pilih jumlah bins untuk histogram:', min_value=10, max_value=100, value=50)
-
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            # Histogram untuk Recency
-            fig_recency = px.histogram(data, x='Recency', nbins=num_bins, title='Distribusi Recency')
-            fig_recency.update_layout(bargap=0.1)
-            st.plotly_chart(fig_recency, use_container_width=True)
-        
-        with col2:
-            # Histogram untuk Monetary Value
-            # Menggunakan log scale untuk menangani outlier
-            fig_monetary = px.histogram(data, x='MonetaryValue', nbins=num_bins, title='Distribusi Monetary Value (Log Scale)', log_y=True)
-            fig_monetary.update_layout(bargap=0.1)
-            st.plotly_chart(fig_monetary, use_container_width=True)
-            
-        # Histogram untuk Frequency
-        # Karena frekuensi sangat miring, kita akan memfilternya untuk visualisasi yang lebih baik
-        st.subheader("Distribusi Frekuensi")
-        st.markdown("Mayoritas pelanggan hanya membeli sekali. Grafik berikut menunjukkan distribusi untuk pelanggan dengan frekuensi > 1.")
-        
-        freq_filtered = data[data['Frequency'] > 1]
-        fig_frequency = px.histogram(freq_filtered, x='Frequency', nbins=num_bins, title='Distribusi Frekuensi (untuk F > 1)', log_y=True)
-        fig_frequency.update_layout(bargap=0.1)
-        st.plotly_chart(fig_frequency, use_container_width=True)
-
-# Pesan jika data tidak dapat dimuat
-else:
-    st.warning("Tidak dapat memuat data. Aplikasi tidak dapat dijalankan.")
-
+if __name__ == '__main__':
+    main()
