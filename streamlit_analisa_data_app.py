@@ -4,44 +4,20 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 import datetime as dt
 
-# --- Konfigurasi Halaman ---
+# --- Konfigurasi Halaman (Dipindahkan ke sini) ---
+# Ini harus menjadi perintah Streamlit pertama
 st.set_page_config(layout="wide")
 
 # Mengatur gaya plot
 sns.set(style='dark')
 
-# --- Fungsi untuk Memuat dan Menggabungkan Data ---
-@st.cache_data
-def load_data():
-    # Memuat data utama yang telah diproses
-    all_df = pd.read_csv("full_data.csv")
-    
-    # Memuat data geolokasi
-    geoloc_df = pd.read_csv("geolocation_data.csv")
-    
-    # Mengagregasi data geolokasi untuk mendapatkan satu lat/lng per zip code (mengambil median)
-    # Ini untuk efisiensi dan menghindari duplikasi
-    geolocation_agg_df = geoloc_df.groupby('geolocation_zip_code_prefix').agg({
-        'geolocation_lat': 'median',
-        'geolocation_lng': 'median'
-    }).reset_index()
-    
-    # Menggabungkan data utama dengan data geolokasi berdasarkan zip code
-    merged_data = pd.merge(
-        all_df,
-        geolocation_agg_df,
-        left_on='customer_zip_code_prefix',
-        right_on='geolocation_zip_code_prefix',
-        how='left'
-    )
-    return merged_data
-
-# --- Fungsi untuk Kalkulasi RFM ---
+# --- Fungsi untuk Kalkulasi RFM (dicopy dari notebook) ---
 @st.cache_data
 def calculate_rfm(df):
     """
     Menghitung Recency, Frequency, dan Monetary value untuk setiap pelanggan.
     """
+    # Pastikan 'order_purchase_timestamp' adalah datetime
     df['order_purchase_timestamp'] = pd.to_datetime(df['order_purchase_timestamp'])
     
     snapshot_date = df['order_purchase_timestamp'].max() + dt.timedelta(days=1)
@@ -62,6 +38,12 @@ def calculate_rfm(df):
 
 # --- Fungsi Utama Aplikasi ---
 def main():
+    # Memuat data (menggunakan cache agar lebih cepat)
+    @st.cache_data
+    def load_data():
+        data = pd.read_csv("fix_data.csv")
+        return data
+
     all_df = load_data()
 
     # --- Sidebar untuk Navigasi ---
@@ -95,6 +77,7 @@ def main():
 
         st.subheader("Metode Pembayaran Populer")
         fig, ax = plt.subplots(figsize=(10, 5))
+        # Mengatasi nilai NaN di 'payment_type' jika ada
         payment_type_counts = all_df['payment_type'].dropna().value_counts().head(5)
         sns.barplot(x=payment_type_counts.index, y=payment_type_counts.values, ax=ax, palette="flare")
         ax.set_title('Top 5 Metode Pembayaran yang Digunakan')
@@ -146,6 +129,7 @@ def main():
         
         st.subheader('Pelanggan dengan Nilai Pembelian Tertinggi Berdasarkan Wilayah (Kota)')
         
+        # Agregasi data untuk kota
         city_payment = all_df.groupby('customer_city')['payment_value'].sum().sort_values(ascending=False).head(10)
         
         fig, ax = plt.subplots(figsize=(12, 6))
@@ -157,9 +141,9 @@ def main():
         st.markdown("São Paulo dan Rio de Janeiro secara signifikan mendominasi total nilai pembelian, menunjukkan konsentrasi pasar di kota-kota besar.")
         
         st.subheader('Peta Sebaran Pelanggan di Brasil')
-        # Menghapus duplikat dan nilai NaN untuk visualisasi peta yang lebih bersih
+        # Menghapus duplikat untuk visualisasi peta yang lebih bersih dan mengambil kolom geo
         geo_df = all_df[['customer_unique_id', 'geolocation_lat', 'geolocation_lng']].drop_duplicates(subset='customer_unique_id').dropna()
-        st.map(geo_df, latitude='geolocation_lat', longitude='geolocation_lng', size=10)
+        st.map(geo_df, latitude='geolocation_lat', longitude='geolocation_lng')
         st.markdown("Peta interaktif di atas menunjukkan konsentrasi pelanggan yang sangat padat di wilayah tenggara dan selatan Brasil, terutama di sekitar kota-kota besar.")
 
 if __name__ == '__main__':
